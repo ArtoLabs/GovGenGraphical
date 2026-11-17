@@ -84,6 +84,10 @@ class ActionGroup:
         if action.type in ("work", "craft"):
             from core.work import work
             t = work(action.type, action.params.get("task") or action.params.get("recipe"))
+            trip = _walks.get(t.key) if t else None
+            if trip:  # a trip out of camp: the walk there and back, and the work on the spot
+                return "about " + format_life_duration(life_hours_to_calendar(
+                    t.life_hours * trip["share"] + trip["walk"])) + " with the walk"
             return format_life_duration(life_hours_to_calendar(t.life_hours if t else 1))
         if action.type == "care":
             care = CHARACTER.care_actions[action.params["kind"]]
@@ -322,7 +326,10 @@ def work_detail(w: Dict[str, Any]) -> str:
     """'2 h · brings back ~4 Berries, ~2 Roots (sometimes) · uses 2 Wood · with a Wooden Spear'."""
     from world.items import ITEMS
     q = w.get("quality", 50)
-    parts = [format_life_duration(life_hours_to_calendar(w["life_hours"]))]
+    trip = _walks.get(w.get("key"))
+    parts = [format_life_duration(life_hours_to_calendar(w["life_hours"]))] if not trip else \
+        ["about " + format_life_duration(life_hours_to_calendar(w["life_hours"] * trip["share"] + trip["walk"]))
+         + " with the walk"]
     if w["yields"]:
         bits = []
         for y in w["yields"]:
@@ -452,6 +459,7 @@ def camp_line(view: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 _terms: Dict[str, str] = {}
+_walks: Dict[str, Dict[str, float]] = {}  # the view's 'walks': how far each trip you could make is
 
 
 def use_terms(view: Optional[Dict[str, Any]]):
@@ -459,6 +467,9 @@ def use_terms(view: Optional[Dict[str, Any]]):
     if view and view.get("terms"):
         _terms.clear()
         _terms.update(view["terms"])
+    if view is not None:
+        _walks.clear()
+        _walks.update(view.get("walks", {}))
 
 
 def term(word: str) -> str:
@@ -1010,3 +1021,9 @@ def craft_detail(view: Dict[str, Any], r: CraftRow) -> List[Tuple[str, str]]:
     if breaks:
         lines.append((f"Breaks on about {breaks:.0%} of uses (about {1 / breaks:.0f} uses on average).\n", "dim"))
     return lines
+
+
+def skill_average(skills: Dict[str, float]) -> float:
+    """One number for all of a person's skills: their average, as mood is the average of their contentment
+    meters. Skills never practised count as 0."""
+    return sum(skills.values()) / len(skills) if skills else 0.0

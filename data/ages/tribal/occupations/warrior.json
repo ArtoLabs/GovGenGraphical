@@ -13,6 +13,6 @@
   "contributes": {"safety": {"amount": 1.0, "while_working": 2.0}},
   "speeds_contentment": {"safety": {"curve": [[0, 1.0], [1, 1.5], [2, 1.9], [4, 2.5]]}},
   "tasks": {
-    "patrol": {"label": "Patrol the camp", "life_hours": 2, "skill": "combat", "tools": ["flint_spear", "wooden_spear"]}
+    "patrol": {"place": "patrol","label": "Patrol the camp", "life_hours": 2, "skill": "combat", "tools": ["flint_spear", "wooden_spear"]}
   }
 }

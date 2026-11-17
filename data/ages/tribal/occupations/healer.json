@@ -11,6 +11,7 @@
   "contributes": {"care": {"amount": 1.0}},
   "tasks": {
     "gather_herbs": {
+      "place": "herbs",
       "label": "Gather healing herbs",
       "life_hours": 2,
       "skill": "healing",

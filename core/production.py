@@ -373,7 +373,8 @@ class Production:
 
     def _add_site(self, kind: str, by: str, loads: float, life_hours: float) -> Dict[str, Any]:
         site = {"id": self.next_site_id, "kind": kind, "by": by, "loads": loads, "total": loads,
-                "found": self.clock, "until": self.clock + environment.life_hours_to_calendar(life_hours)}
+                "found": self.clock, "until": self.clock + environment.life_hours_to_calendar(life_hours),
+                "at": self.engine.movement.site_spot(kind, by)}  # where on the map it lies: trips walk there
         self.next_site_id += 1
         self.sites.append(site)
         return site

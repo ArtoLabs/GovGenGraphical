@@ -12,6 +12,7 @@
   "contributes": {"food": {"amount": 1.6, "category": "meat"}},
   "tasks": {
     "hunt": {
+      "place": "hunting",
       "label": "Go hunting",
       "life_hours": 3,
       "skill": "hunting",

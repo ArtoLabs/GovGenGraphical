@@ -145,10 +145,21 @@ class Possessions:
         player.inventory.sort()
         return True
 
+    def _at_store(self, player, quiet: bool = False) -> bool:
+        """The store is in camp: only someone whose body is there can take from it or put into it."""
+        if self.engine.movement.in_camp(player.name):
+            return True
+        if not quiet:
+            terms = self.engine.terms()
+            Messages.add(f"{player.name} is away from {terms['home']}: the {terms['store_name']} is out of reach.",
+                         important=False)
+        return False
+
     def _drop_item(self, player, params, reason) -> bool:
         i = self._slot(player, params)
-        if i is None:
+        if i is None or not self._at_store(player):
             return False
+        self.engine.movement.store_visit(player.name)
         taken = player.inventory.take_from(i, _int(params.get("count"), 10 ** 9))
         if not taken:
             Messages.add("That slot is empty.", important=False)
@@ -160,6 +171,8 @@ class Possessions:
 
     def _pick_up(self, player, params, reason) -> bool:
         item = params.get("item")
+        if not self._at_store(player):
+            return False
         have = self.ground.get(item, 0)
         if not have:
             Messages.add("There is none of that in the camp store.", important=False)
@@ -177,6 +190,7 @@ class Possessions:
             self.ground[item] -= n
             if not self.ground[item]:
                 del self.ground[item]
+        self.engine.movement.store_visit(player.name)
         Messages.add(f"{player.name} takes {describe([{'item': item, 'count': n}])} from the camp store", important=False,
                      reason=reason, category="life")
         return True
@@ -255,6 +269,7 @@ class Possessions:
                         self.ground[k] -= n
                         if not self.ground[k]:
                             del self.ground[k]
+                        self.engine.movement.store_visit(player.name)
                     used.append({"item": k, "count": n})
                     left -= n
         return used
@@ -339,6 +354,8 @@ class Possessions:
         it can: a varied pack makes people content). Returns True if they took anything."""
         from world.items import restoring
         took = False
+        if not self._at_store(player, quiet=True):
+            return False  # out on a trip: the store is back in camp
         for need, key in (("food", "meals"), ("water", "drinks")):
             portion = self._portion(need)
             if self._points(player, need) >= KEEPING.get("restock_below_meals", 1) * portion:
@@ -369,6 +386,8 @@ class Possessions:
                      for stacks in t.tool_consumes.values() for s in stacks for k in substitutes(s["item"])}
         mine = self._own_work_uses(player)
         done = False
+        if not self._at_store(player, quiet=True):
+            return False
         for item, have in player.inventory.totals().items():
             info = ITEMS[item]
             if item not in materials or info.uses or item in mine["tools"] or \
@@ -381,6 +400,8 @@ class Possessions:
                 done = True
                 Messages.add(f"{player.name} puts {describe([{'item': item, 'count': spare}])} in the camp store",
                              important=False, category="life", reason="their work doesn't use it")
+        if done:
+            self.engine.movement.store_visit(player.name)
         return done
 
     @staticmethod
@@ -448,6 +469,7 @@ class Possessions:
             return True
         if self.ground.get(key, 0) and player.inventory.room_for(key) >= 1:
             player.inventory.add(key, 1, self._store_take(key))
+            self.engine.movement.store_visit(player.name)  # they walk by the store for it
             return True
         return False
 

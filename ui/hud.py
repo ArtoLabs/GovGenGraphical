@@ -1,18 +1,23 @@
 """The command-center HUD: a fixed, non-scrolling terminal screen built with Textual.
 
-    ┌ top bar: date, age, government, points, speed ───────────────────────────────┐
-    │ CHRONICLE (what everyone  │ YOU: status, stats, roles,       │ TRIBE          │
-    │ is doing, live)           │      your action keys            │ who holds what,│
-    │                           │ GOVERNMENT AND VOTES: reforms,   │ who is doing   │
-    │                           │      open nominations and votes  │ what           │
-    │                           │ INNOVATION POOL: research, next  │                │
-    │                           │      age, discoveries as icons   │                │
-    ├───────────────────────────┴──────────────────────────────────┴────────────────┤
-    │ F-key bar: information screens and game controls                              │
-    └ status line ──────────────────────────────────────────────────────────────────┘
+    ┌ top bar: date, age, government, sky, camp store, speed ──────────────────────┐
+    │ YOU: who you are, what │                                    │ TRIBE          │
+    │ you're doing, body,    │                                    │ who holds what,│
+    │ skills, mood           │          THE WORLD MAP             │ who does what  │
+    │                        │   (scrolls under the panels)       │ FOUND PLACES   │
+    │ CHRONICLE: the latest  │                                    │                │
+    │ few things that        │   ACTIONS AND KEYS (Tab shows or   │                │
+    │ happened               │   hides them)                      │                │
+    ├────────────────────────┴────────────────────────────────────┴────────────────┤
+    │ GOVERNMENT AND VOTES: reforms, society, open ballots  │ INNOVATION POOL      │
+    ├───────────────────────────────────────────────────────┴──────────────────────┤
+    │ key hints                                                                    │
+    └ status line ─────────────────────────────────────────────────────────────────┘
 
-Letters act, F-keys look. Pressing an action key opens a small picker; numbers (or arrows and
-Enter, or the mouse) choose, Esc goes back. The game keeps running the whole time.
+The panels sit at the edges and the map (ui/worldmap.py) fills everything between and behind them.
+Letters act, F-keys look, arrows move the map. Pressing an action key opens a small picker; numbers (or
+arrows and Enter, or the mouse) choose, Esc goes back. The game keeps running the whole time. What the
+small panels leave out is on the F-key screens (F8 your character, F3 government, F2 tribe, F7 the log).
 
 All game data comes from HUDController (thread-safe) and ui/model.py (UI-neutral), so a graphical
 client can replace this file without touching the game.
@@ -25,7 +30,7 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
+from textual.containers import Container, Grid, Horizontal, Vertical, VerticalScroll
 from textual.markup import escape
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Input, Label, OptionList, RichLog, Static
@@ -33,17 +38,19 @@ from textual.widgets.option_list import Option
 
 from controllers.base import Decision
 from controllers.hud import HUDController
-from core.calendar import format_date, format_duration
+from core.calendar import HOURS_PER_YEAR, format_date, format_duration
 from world.environment import HOURS_PER_LIFE_HOUR, format_life_duration
 from world.character import RULES as CHARACTER
 from innovations.innovation import INTERFACE_ICONS
 from ui.model import (camp_line, term, use_terms, occupation_icons, meter_contests, BallotWatcher, ballot_status, ACTION_SECTIONS, INTERFACES, Menu,
                       life_icons, life_status,
                       MenuItem, action_groups, build_menu, innovation_catalog, current_age_innovations, positions_of,
-                      CRAFT_FILTERS, craft_catalog, craft_detail, protected_note)
+                      CRAFT_FILTERS, craft_catalog, craft_detail, protected_note, skill_average)
 from ui.inventory import InventoryScreen
+from ui.worldmap import WorldMapView
 from utils.messages import Message
 from world.items import ITEMS
+from world.map import world_map
 
 PICK_KEYS = "123456789abcdefghijklmnopqrstuvwxyz"
 ALERT_STYLE = {"info": "", "action": "bold green", "urgent": "bold red", "done": "cyan"}
@@ -267,9 +274,25 @@ class MeterBox(Static):
         self.update(meter_rows(rows, width, self.lines))
 
 
+# The keys that are not actions: (section, [(key, label, what a click does)]).
+KEY_SECTIONS: List[Tuple[str, List[Tuple[str, str, str]]]] = [
+    ("Look", [("F1", "Help", "screen.info('help')"), ("F2", "Tribe", "screen.info('tribe')"),
+              ("F3", "Government", "screen.info('government')"), ("F4", "Innovations", "screen.info('innovations')"),
+              ("F7", "Log", "screen.info('log')"), ("F8", "You", "screen.info('character')"),
+              ("F9", "Society", "screen.info('society')"), ("F12", "Crafts", "screen.info('crafts')")]),
+    ("Game", [("Space", "Pause", "screen.pause"), ("F5", "Speed", "screen.speed"),
+              ("F6", "Chronicle detail", "screen.detail"), ("M", "Auto/manual", "screen.toggle_auto"),
+              ("F10", "Save+quit", "app.save_quit")]),
+    ("Map", [("←↑↓→", "Move", "screen.pan(0, 0)"), ("+", "Zoom in", "screen.zoom_in"),
+             ("-", "Zoom out", "screen.zoom_out"), ("Home", "Back home", "screen.map_home"),
+             ("End", "Find yourself", "screen.map_me"), ("Tab", "Hide these keys", "screen.toggle_actions")]),
+]
+
+
 def actions_markup(groups: List[Any], width: int) -> str:
-    """Your action keys as keycaps, one row per section (Politics, Leading, Life). Uses aligned columns
-    and section names when they fit in `width`, and wraps when nothing else does."""
+    """Every key as a keycap, one row per section: your actions (Politics, Leading, Life), then the
+    screens, the game controls and the map. Uses aligned columns and section names when they fit in
+    `width`, and wraps when nothing else does."""
     by_type = {g.kind.type: g for g in groups}
     sections = [(name, [by_type[t] for t in types if t in by_type]) for name, types in ACTION_SECTIONS]
     listed = {t for _, types in ACTION_SECTIONS for t in types}
@@ -284,6 +307,9 @@ def actions_markup(groups: List[Any], width: int) -> str:
         return f"[dim][on #3a3a3a] {k} [/] {escape(label)}[/]", 4 + len(label)
 
     sections = [(name, [cell(g) for g in gs]) for name, gs in sections if gs]
+    for name, keys in KEY_SECTIONS:
+        sections.append((name, [(f"[@click={click}][b black on cyan] {k} [/] {escape(text)}[/]", len(k) + 3 + len(text))
+                                for k, text, click in keys]))
     name_w = max(len(n) for n, _ in sections) + 2
 
     def layout(labeled: bool, per_row: int, gap: int) -> Tuple[List[str], int]:
@@ -307,7 +333,7 @@ def actions_markup(groups: List[Any], width: int) -> str:
 
 
 class ActionBar(Static):
-    """The Actions box: lays out its keycaps again whenever its width changes."""
+    """The Actions and keys box: lays out its keycaps again whenever its width changes."""
     groups: List[Any] = []
 
     def show(self, groups: List[Any]):
@@ -332,6 +358,30 @@ class FlowGrid(Grid):
         cols = next((c for c in self.columns if width >= c * self.min_cell), self.columns[-1])
         if self.styles.grid_size_columns != cols:
             self.styles.grid_size_columns = cols
+
+
+def contest_meters(v):
+    """Each running campaign or oration as a column: how far every listener is won over (None if there
+    is none)."""
+    from rich.columns import Columns
+    cols = []
+    for c in meter_contests(v):
+        col = Text(no_wrap=True, overflow="ellipsis")
+        what = "persuaded by" if c["style"] == "persuasion" else "for"
+        col.append(f"{c['icon']} {what} {c['challenger']}\n", style="bold")
+        col.append(f"   ({c['office']})\n", style="dim")
+        for p in v["players"]:
+            name = p["name"]
+            m = c["meters"].get(name)
+            if m is None and name not in (c["challenger"], c["defender"]):
+                continue
+            col.append(f"{name:<8}", style="bold green" if name == v["you"] else "bold")
+            if m is None:
+                col.append("campaigning\n" if name == c["challenger"] else "defending\n", style="cyan")
+            else:
+                col.append(f"{bar(m, 100, 8)} {m:3.0f}%\n", style="green" if m >= 50 else "yellow")
+        cols.append(col)
+    return Columns(cols, width=22, padding=(0, 2)) if cols else None
 
 
 # --------------------------------------------------------------------------- #
@@ -555,6 +605,36 @@ class HelpScreen(InfoScreen):
                  "for a while (shown in the picker). Politics runs on days and work on hours, so while you are out "
                  "working, crafting, resting or eating you can still vote, nominate, appoint, persuade or challenge "
                  "without stopping; only keys you can't use right now are greyed out.\n\n")
+        t.append("The screen\n", style="bold")
+        t.append("The world map fills the middle and runs on behind the panels at the edges. Top left is you: who "
+                 "you are, your office and work, what you are doing, your body's meters, and one bar each for "
+                 "Ability (how well you do your job now), Skills (the average of all your skills) and Mood (the "
+                 "average of your contentment); F8 shows each skill and meter, your description and attributes, "
+                 "and what your roles let you do. Bottom left is the chronicle's latest lines (F7: all of it). "
+                 "Right: the tribe and the places found. Along the bottom: the government, open votes and contests "
+                 "(F3 shows who is how far persuaded in each campaign) and the innovation pool. Tab shows or hides "
+                 "the box of every action and key; the keys work either way.\n\n")
+        t.append("The map\n", style="bold")
+        t.append("Each square is one kind of terrain: plains, forest, hills, mountains, marsh, beach, rivers and "
+                 "sea. Arrow keys move the view (with Shift, faster), as does dragging it with the mouse or the "
+                 "mouse wheel; + and - zoom in and out (or Ctrl and the wheel); Home brings the view back to the "
+                 "camp, End to you. Click a square to see what and who is there.\n"
+                 "The camp is laid out around its fire (🔥; grey when it has gone out): the store (📦), the "
+                 "workshop where things are made, the council ground, and a sleeping place for everyone. Every "
+                 "person is a figure on the map (☻; children ☺; you are green, someone walking is yellow, a "
+                 "number counts those standing together); zoomed in, their names are under them. Icons out on "
+                 "the map are the places Scouts have found.\n"
+                 "People walk to wherever a thing is done, and the walk takes time: a Gatherer walks to the "
+                 "woods or the river and back to the store, so how long they are gone depends on how far it is "
+                 "(the picker says about how long). Sleeping and resting happen at one's own sleeping place, "
+                 "eating and warming up beside the fire, crafting at the workshop, an office's work at the "
+                 "council ground. The store can only be used in camp: someone out on a trip can't take from it "
+                 "until they are back. Voting, nominating, appointing and persuading take no walking.\n\n")
+        t.append("The tribe list\n", style="bold")
+        t.append("One line each: ● mood (green content, red unhappy), name, work, office, then what they are doing "
+                 "(yellow: busy now; dim: their last deed, or at home). A red icon is a need gone critical; 🤒 ill, "
+                 "🤰 with child, 🧒 a child, ✗ cannot vote, 💀 dead and not yet laid to rest. F2 shows everyone in "
+                 "full, F9 the society.\n\n")
         t.append("Actions (letters)\n", style="bold")
         for key, text in [("v", "Vote on an open ballot"), ("n", "Nominate a candidate (one election at a time each), or decline your own nomination"),
                           ("a", "Appoint someone to a position you control"),
@@ -619,18 +699,21 @@ class HelpScreen(InfoScreen):
                  "stays low for a while, more with every dismissal, and the rest of the tribe is unsettled too.\n"
                  "An unhappy tribe gives its leaders time: people grumble first, and only when their patience runs "
                  "out (the chronicle warns you; F9 shows everyone's) do they campaign, challenge or vote them out.\n"
-                 "Ability (under your Roles) is how well you do your job right now, not how content you are. Work "
+                 "Ability (in your box) is how well you do your job right now, not how content you are. Work "
                  "your office with W to grow its skill: a Clan Leader learns leadership.\n\n")
         t.append("Screens and controls (F-keys)\n", style="bold")
         t.append("When you nominate, vote for or appoint someone, each person shows how well they would do the job "
                  "(Fit), the stats and skill the job uses, and what kind of person they are.\n\n")
         for key, text in [("F1", "This help"), ("F2", "Tribe: everyone as a card of meters (stats, body, content, skills); "
                                                  "arrows choose a member, Enter opens their inventory"),
-                          ("F3", "Government: offices, statuses and possible reforms"),
+                          ("F3", "Government: who is how far persuaded in running campaigns, offices, statuses "
+                                 "and possible reforms"),
                           ("F4", "Innovations of the current age: status and what each needs; Enter queues research"),
                           ("F5", "Change playback speed"), ("Space", "Pause / resume (you can still act)"),
                           ("F6", "Chronicle detail: everything (everyday life in green) / no everyday life / important only"),
-                          ("F7", "Full chronicle history"), ("F8", "Your character sheet: attributes, body, skills"),
+                          ("F7", "Full chronicle history"),
+                          ("F8", "Your character sheet: description, attributes, roles and ability, body, "
+                                 "contentment, every skill"),
                           ("F9", "Society: how well the tribe works and how content everyone is"),
                           ("F10", "Save and quit (also Ctrl+Q)"),
                           ("M", "Auto / manual: on auto the game plays your character exactly like an NPC (you can "
@@ -638,7 +721,10 @@ class HelpScreen(InfoScreen):
                                 "full control"),
                           ("F12", "Crafting chart (also K): every item that can be made or found in this age, "
                                   "the job, research, tools and materials it takes, where those come from, and "
-                                  "whether it can be had now")]:
+                                  "whether it can be had now"),
+                          ("Tab", "Show or hide the box of actions and keys"),
+                          ("←↑↓→", "Move the map (Shift: faster); Home: back to the camp; End: to you"),
+                          ("+ -", "Zoom the map in and out")]:
             t.append(f"  {key:<6}", style="bold green")
             t.append(text + "\n")
         return t
@@ -881,7 +967,11 @@ class GovernmentScreen(InfoScreen):
             t.append(f"  {r['name']}", style="bold")
             t.append(f" ({r['age']}): {r['description']}\n    Offices: {offices}\n"
                      f"    You would be: {r['outcome'].get(v['you']) or 'no office'}\n", style="dim")
-        return t
+        meters = contest_meters(v)
+        if meters is None:
+            return t
+        from rich.console import Group
+        return Group(Text("Campaigns and orations: who is how far persuaded\n", style="bold"), meters, Text(""), t)
 
 
 class CharacterScreen(InfoScreen):
@@ -899,6 +989,20 @@ class CharacterScreen(InfoScreen):
             t.append(f"  ·  {occupation_icons(v, me)} {', '.join(v['your_occupations'])}", style="cyan")
         t.append(f"\n{me['description']}  ", style="italic")
         t.append(f"Traits: {', '.join(c['traits'])}\n\n", style="dim")
+        t.append("Roles\n", style="bold")
+        ab = v.get("ability")
+        if ab is not None:
+            t.append(f"  {'Ability':<13}", style="bold")
+            t.append(f"{ab['value']:>3.0f} {bar(ab['value'], 100, 10)}  ", style=level_color(ab["value"]))
+            t.append_text(ability_note(ab))
+            t.append("\n  How well you do your job right now: talent, skill, and how tired or unwell you are.\n",
+                     style="dim")
+        for key in v["your_interfaces"]:
+            t.append(f"  {role_icon(key)} {key.replace('_', ' ')}\n")
+        if not v["your_interfaces"]:
+            t.append("  No roles yet.\n", style="dim")
+        t.append("  A role is something your office or membership lets you do (F3 says which office gives what).\n\n",
+                 style="dim")
         t.append("Attributes\n", style="bold")
         for k, a in CHARACTER.attributes.items():
             val = c["attributes"][k]
@@ -938,7 +1042,8 @@ class CharacterScreen(InfoScreen):
         t.append(f"  Work from age {life.get('work_age', 9):g}; vote and hold office from {life.get('politics_age', 14):g}. "
                  "The old fall ill more often and are cured less often.\n", style="dim")
         t.append_text(contentment_text(v))
-        t.append("\nSkills\n", style="bold")
+        t.append("\nSkills", style="bold")
+        t.append(f"  average {skill_average(c['skills']):.1f} of {CHARACTER.skill_max:g}\n", style="dim")
         for k, sdef in CHARACTER.skills.items():
             val = c["skills"][k]
             t.append(f"  {sdef.name:<13}", style="bold" if val else "dim")
@@ -1308,6 +1413,14 @@ class CommandCenter(Screen):
         Binding("f12", "info('crafts')", "Crafts"),
         Binding("k", "info('crafts')", "Crafts", show=False),
         Binding("m", "toggle_auto", "Auto/manual"),
+        Binding("tab", "toggle_actions", "Actions and keys", priority=True),
+        Binding("home", "map_home", "Map: back home", priority=True),
+        Binding("end", "map_me", "Map: find yourself", priority=True),
+        Binding("plus", "zoom_in", "Zoom in", show=False), Binding("equals_sign", "zoom_in", "Zoom in", show=False),
+        Binding("minus", "zoom_out", "Zoom out", show=False),
+    ] + [Binding(("shift+" if far else "") + key, f"pan({dx * (10 if far else 2)}, {dy * (10 if far else 2)})",
+                 show=False, priority=True)
+         for key, dx, dy in (("left", -1, 0), ("right", 1, 0), ("up", 0, -1), ("down", 0, 1)) for far in (False, True)
     ] + [Binding(k, f"act('{t}')", show=False) for k, t in
          [("v", "vote"), ("n", "nominate"), ("a", "appoint"), ("d", "dismiss"), ("c", "call_vote"),
           ("f", "reform"), ("r", "research"), ("o", "role_command"), ("e", "care"), ("j", "take_occupation"),
@@ -1315,44 +1428,67 @@ class CommandCenter(Screen):
 
     def compose(self) -> ComposeResult:
         yield Static(id="top")
-        with Horizontal(id="main"):
-            yield RichLog(id="chronicle", wrap=True, markup=False, max_lines=600, auto_scroll=True, min_width=20)
-            with Vertical(id="center"):
-                with Vertical(id="you"):
-                    with Horizontal(id="you_head"):
+        # The map fills the whole middle; the panels float over its edges. The containers that hold the
+        # panels in place are invisible, so the map shows (and takes the mouse) wherever no panel is.
+        with Container(id="main"):
+            yield WorldMapView(world_map(), id="map")
+            with Horizontal(id="overlay",):
+                with Vertical(id="left",):
+                    with Vertical(id="you"):
                         yield Static(id="you_id")
-                        yield MeterBox("Roles", id="you_roles", classes="box")
-                    with FlowGrid(id="you_boxes", min_cell=22, columns=(3, 1)):
-                        yield MeterBox("Body", id="you_body", classes="box")
-                        yield MeterBox("Skills", id="you_skills", classes="box")
-                        yield MeterBox("Content", id="you_content", classes="box")
-                    yield ActionBar(id="you_actions", classes="box")
-                yield VerticalScroll(Static(id="ballots_body"), id="ballots")
-                yield InnovationPool(id="innovations")
-            with Vertical(id="right"):
-                yield VerticalScroll(Static(id="tribe_body"), id="tribe")
-                yield VerticalScroll(Static(id="places_body"), id="places")
+                        yield MeterBox(id="you_meters")
+                    yield Static(classes="gap")
+                    yield RichLog(id="chronicle", wrap=True, markup=False, max_lines=600, auto_scroll=True, min_width=20)
+                with Vertical(id="mid",):
+                    yield Static(classes="gap")
+                    yield ActionBar(id="actions", classes="box")
+                with Vertical(id="right",):
+                    yield VerticalScroll(Static(id="tribe_body"), id="tribe")
+                    yield VerticalScroll(Static(id="places_body"), id="places")
+        with Horizontal(id="bottom"):
+            with Horizontal(id="ballots"):
+                yield Static(id="gov_head")
+                yield VerticalScroll(Static(id="ballots_body"), id="ballots_scroll")
+            yield InnovationPool(id="innovations")
         yield Static(id="fkeys")
         yield Static(id="status")
 
     def on_mount(self):
         self.query_one("#chronicle").border_title = "Chronicle"
+        self.query_one("#chronicle").border_subtitle = "F7 all"
         self.query_one("#you").border_title = "You"
-        self.query_one("#you_skills").border_subtitle = "F8 all"
-        self.query_one("#you_actions").border_title = "Actions"
+        self.query_one("#you").border_subtitle = "F8 more"
+        self.query_one("#actions").border_title = "Actions and keys"
+        self.query_one("#actions").border_subtitle = "Tab hides"
         self.query_one("#ballots").border_title = "Government and votes"
+        self.query_one("#ballots").border_subtitle = "F3 more"
         self.query_one("#innovations").border_title = "Innovation pool"
         self.query_one("#innovations").border_subtitle = "click an icon, or F4"
         self.query_one("#tribe").border_title = term("members")
+        self.query_one("#tribe").border_subtitle = "F2 details"
         self.query_one("#places").border_title = "Found places"
+        self.call_after_refresh(self._fit_map)
+
+    def _draw_keys(self):
+        """The hint line: the few keys worth seeing all the time (the rest are in the Tab box)."""
         self.query_one("#fkeys", Static).update(
-            "[@click=screen.info('help')][b green]F1[/] help[/]  [@click=screen.info('tribe')][b green]F2[/] tribe[/]  "
-            "[@click=screen.info('government')][b green]F3[/] government[/]  "
-            "[@click=screen.info('innovations')][b green]F4[/] innovations[/]  "
-            "[@click=screen.speed][b green]F5[/] speed[/]  [@click=screen.pause][b green]Space[/] pause[/]  "
-            "[@click=screen.detail][b green]F6[/] detail[/]  [@click=screen.info('log')][b green]F7[/] log[/]  [@click=screen.info('character')][b green]F8[/] you[/]  [@click=screen.info('society')][b green]F9[/] society[/]  "
-            "[@click=app.save_quit][b green]F10[/] save+quit[/]  [@click=screen.info('crafts')][b green]F12[/] crafts[/]  "
-            "[@click=screen.toggle_auto][b green]M[/] auto/manual[/]")
+            "[@click=screen.toggle_actions][b green]Tab[/] actions and keys[/]  "
+            "[@click=screen.info('help')][b green]F1[/] help[/]  [@click=screen.pause][b green]Space[/] pause[/]  "
+            "[dim]│[/]  [b green]←↑↓→[/] move the map [dim](Shift: faster; or drag it)[/]  "
+            "[@click=screen.zoom_in][b green]+[/][/] [@click=screen.zoom_out][b green]-[/] zoom[/]  "
+            f"[@click=screen.map_home][b green]Home[/] {escape(term('home'))}[/]  "
+            "[@click=screen.map_me][b green]End[/] you[/]  [dim]click a tile to see what is there[/]")
+
+    def on_resize(self):
+        self.call_after_refresh(self._fit_map)
+
+    def _fit_map(self):
+        """Tell the map which of its edges the side panels cover, so 'home' lands in the open middle."""
+        world = self.query_one("#map", WorldMapView)
+        first = world.margins == (0, 0, 0, 0)
+        world.margins = (self.query_one("#you").outer_size.width, 0, self.query_one("#tribe").outer_size.width, 0)
+        if first and any(world.margins):
+            world.centre_on_home()
 
     @property
     def hud(self) -> 'GovGenHUD':
@@ -1372,6 +1508,7 @@ class CommandCenter(Screen):
         self.query_one("#top", Static).update(
             f" [b]GovGen[/]  │  [b]{escape(view['date'])}[/]  │  {escape(view['age']['name'])}  │  "
             f"{escape(gov['name'])}  │  {self._sky(view['world'])}  │  {self._camp(view)}  │  {speed}")
+        self._draw_keys()
         self._draw_you(view, legal)
         self._draw_ballots(view, legal)
         self._draw_tribe(view)
@@ -1396,18 +1533,18 @@ class CommandCenter(Screen):
         return f"{icon} {w['time_of_day']} [dim]{left} to {until}[/]  air {w['temperature']:g}°C  {fire}"
 
     def _draw_you(self, v, legal):
-        """Who you are and what you can do: a header (name, age, attributes, what you're doing), boxes of
-        meters (body, skills, content, roles) and your action keys grouped by kind."""
+        """The small You box: who you are, your place in the tribe, what you're doing, your body's meters,
+        and one bar each for ability, skills (the average of them all) and mood (the average of your
+        contentment). Everything it leaves out (description, attributes, each skill and contentment
+        meter, what your roles are for) is on F8."""
         me = next(p for p in v["players"] if p["name"] == v["you"])
         c = v["character"]
-
-        # Header: who you are and what you're doing on the left, your Roles box on the right.
-        sep = "  " if self.query_one("#you_id").content_size.width >= 42 else " "
+        width = self.query_one("#you_id").content_size.width or 40
         life = c.get("life") or {}
+        temp = f"  [dim]{c['body_temperature']:.1f}°C[/]" if c.get("body_temperature") is not None else ""
         head = [f"[b]{escape(v['you'])}[/] {escape(life.get('gender_icon', ''))}  [dim]age[/] {c['age']} "
-                f"[dim]({escape(c['life_stage'])})[/]",
-                f"[i]{escape(me['description'])}[/]" + (f" [dim]({escape(', '.join(c['traits']))})[/]" if c.get("traits") else ""),
-                sep.join(f"[dim]{a.abbr}[/] [b]{c['attributes'][k]}[/]" for k, a in CHARACTER.attributes.items())]
+                f"[dim]({escape(c['life_stage'])})[/]{temp}"]
+        head.extend(self._role_lines(v, me, width))
         if v["free"]:
             head.append("[b black on green] READY [/] [dim]free to act[/]")
         else:
@@ -1430,74 +1567,56 @@ class CommandCenter(Screen):
             else:
                 head.append(f"[b black on cyan] {escape(headline)} [/] [dim]{escape(detail)}[/]")
         if v.get("contest_cooldown_hours"):
-            head.append(f"[dim]after losing a contest: no new campaign or challenge for "
+            head.append(f"[dim]lost a contest: no campaign or challenge for "
                         f"{format_life_duration(v['contest_cooldown_hours'])}[/]")
         ic = v.get("in_contest")
         if ic:
-            hint = {"audience": "[b green]P[/] speak · eat, drink, vote",
-                    "duel": "fighting until one yields"}.get(ic["style"], "can eat, drink, vote")
+            hint = {"audience": "[b green]P[/] speak", "duel": "fighting"}.get(ic["style"], "")
             head.append(f"[b white on dark_magenta] {escape(ic['name'])} vs {escape(ic['opponent'])} [/] {hint}")
         self.query_one("#you_id", Static).update("\n".join(head))
-        self.query_one("#you_roles", MeterBox).show(lambda width: self._role_rows(v, me, width))
 
-        # Meter boxes, all the same height (room for every contentment meter).
-        lines = max(5, len(v["satisfaction"]))
-        body = self.query_one("#you_body", MeterBox)
-        body.border_subtitle = f"{c['body_temperature']:.1f}°C" if c.get("body_temperature") is not None else ""
-        if life.get("illness"):
-            body.border_subtitle = f"[b red]{escape(life['illness']['icon'])} ill[/]  " + body.border_subtitle
-        body.show(lambda width: body_rows(c, words=width >= 24), lines)
-        self.query_one("#you_skills", MeterBox).show(skill_rows(c["skills"], lines), lines)
-        content = self.query_one("#you_content", MeterBox)
-        content.border_subtitle = f"mood [{sat_style(v['mood'])}]{v['mood']:.0f}[/]"
-        content.show(content_rows(v, {k: m["value"] for k, m in v["satisfaction"].items()}), lines)
-
-        self.query_one("#you_actions", ActionBar).show(action_groups(v, legal))
+        def rows(width: int) -> List[Any]:
+            out: List[Any] = body_rows(c, words=width >= 24)
+            ab = v.get("ability")
+            if ab is not None:
+                out.append(MeterRow("Ability", ab["value"], 100, level_color(ab["value"]), f"{ab['value']:.0f}"))
+            skill = skill_average(c["skills"])
+            out.append(MeterRow("Skills", skill, CHARACTER.skill_max, SKILL_COLOR, f"{skill:.1f} avg"))
+            out.append(MeterRow("Mood", v["mood"], 100, level_color(v["mood"]), f"{v['mood']:.0f}"))
+            return out
+        self.query_one("#you_meters", MeterBox).show(rows)
+        self.query_one("#actions", ActionBar).show(action_groups(v, legal))
 
     @staticmethod
-    def _role_rows(v, me, width: int) -> List[Any]:
-        """Your place in the tribe: offices and statuses, your work and how well you do it, and the roles
-        (powers) they give you, wrapped to `width`."""
-        rows: List[Any] = []
-        t = Text()
-        for i, pos in enumerate(me["offices"] + me["statuses"]):
-            t.append(", " if i else "")
-            t.append(pos, style="bold red" if pos in me["statuses"] and pos not in me["offices"] else "bold cyan")
-        if not t.plain:
-            t.append(term("member"), style="bold cyan")
+    def _role_lines(v, me, width: int) -> List[str]:
+        """Your place in the tribe in a line or two: offices and statuses and your work, then the roles
+        (powers) they give you, by name while they fit in `width` and as icons alone when they don't."""
+        parts = []
+        for pos in me["offices"] + me["statuses"]:
+            bad = pos in me["statuses"] and pos not in me["offices"]
+            parts.append(f"[b {'red' if bad else 'cyan'}]{escape(pos)}[/]")
+        line = ", ".join(parts) or f"[b cyan]{escape(term('member'))}[/]"
+        child = (me.get("life") or {}).get("child")
         if me["occupations"]:
-            t.append("  ·  ", style="dim")
-            t.append(f"{occupation_icons(v, me)} {', '.join(me['occupations'])}", style="cyan")
-        elif not me["offices"] and (me.get("life") or {}).get("child"):
-            t.append("  ·  ", style="dim")
-            t.append("a child: plays and studies (W)", style="dim")
+            line += f" [dim]·[/] [cyan]{occupation_icons(v, me)} {escape(', '.join(me['occupations']))}[/]"
         elif not me["offices"]:
-            t.append("  ·  ", style="dim")
-            t.append("no work (J)", style="dim")
+            line += " [dim]· a child (W: play, study)[/]" if child else " [dim]· no work (J)[/]"
         if not me["can_vote"] and (me.get("life") or {}).get("of_age", True):
-            t.append("  ·  cannot vote", style="red")
+            line += " [red]· cannot vote[/]"
         elif not me["can_vote"]:
-            t.append(f"  ·  votes from {(me.get('life') or {}).get('politics_age', 14):g}", style="dim")
-        rows.append(t)
-        ab = v.get("ability")
-        if ab is not None:
-            wq = ab["value"]
-            rows.append(MeterRow("Ability", wq, 100, level_color(wq), f"{wq:.0f}",
-                                 label_style="dim", note_style="bold " + level_color(wq)))
-            rows.append(ability_note(ab))
-        line = Text()
-        for key in v["your_interfaces"]:
-            item = f"{role_icon(key)} {key.replace('_', ' ')}"
-            if line.plain and line.cell_len + 3 + Text(item).cell_len + 1 > width:
-                rows.append(line)
-                line = Text()
-            line.append("   " if line.plain else "")
-            line.append(item)
-        rows.append(line if line.plain else Text("no roles yet", style="dim"))
-        return rows
+            line += f" [dim]· votes from {(me.get('life') or {}).get('politics_age', 14):g}[/]"
+        keys = v["your_interfaces"]
+        if not keys:
+            return [line, "[dim]no roles yet[/]"]
+        named = "  ".join(f"{role_icon(k)} {k.replace('_', ' ')}" for k in keys)
+        if Text(named).cell_len <= width:
+            return [line, escape(named)]
+        return [line, "[dim]roles[/] " + " ".join(role_icon(k) for k in keys)]
 
     def _draw_ballots(self, v, legal):
-        """Government, recent alerts, then one spaced-out card per open ballot with a countdown."""
+        """The bar along the bottom: the government and society at the left, then a card per running
+        contest and open ballot side by side (each with a countdown), then the latest alerts. Who is
+        how far persuaded in each campaign is on F3."""
         gov = v["government"]
         t = Text()
         t.append(gov["name"], style="bold cyan")
@@ -1508,145 +1627,119 @@ class CommandCenter(Screen):
             t.append(f" (not for {gov['reform_cooldown_days']} days)", style="dim")
         elif gov["available_reforms"] and gov["reform_mode"]:
             t.append(f" ({'by your decree' if gov['reform_mode'] == 'decree' else 'you may call a vote'}: F)", style="green")
-        t.append("\n")
         soc = v.get("society", {})
         if soc:
-            t.append("Society ", style="dim")
+            t.append("\nSociety ", style="dim")
             t.append(f"{soc['score']:.0f}", style=sat_style(soc["score"]).replace("b ", "bold "))
-            t.append("  ")
+            t.append(" F9\n", style="dim")
             for q in soc["qualities"].values():
                 if q["active"]:
                     t.append(f"{q['icon']}{q['value']:.0f} ", style=sat_style(q["value"]).replace("b ", "bold "))
-            t.append(" F9\n", style="dim")
+        self.query_one("#gov_head", Static).update(t)
 
         # Contests come first (yours at the top): they move fast and can cost you your office.
-        needs_you = self._draw_contests(t, v)
-        head, t = t, Text()
-        meters = self._contest_meters(v)
-        alerts = self.hud.alerts[-4 if v.get("contests") else -5:]
-        if alerts:
-            t.append("─" * 46 + "\n", style="dim")
-            for i, a in enumerate(reversed(alerts)):
-                newest = i == 0 and self.hud.alert_fresh()
-                style = ALERT_STYLE[a.level] + (" reverse" if newest and a.level in ("action", "urgent") else "")
-                t.append(f"{a.icon} ", style="")
-                t.append(f"{a.date}  ", style="dim")
-                t.append(a.text + "\n", style=style)
-        t.append("─" * 46 + "\n", style="dim")
-
-        if not v["ballots"] and not v.get("contests"):
-            t.append("No open elections, votes or contests.", style="dim")
+        cards, needs_you = self._contest_cards(v)
         for b in v["ballots"]:
             tag, level = ballot_status(b, legal, v["free"])
             needs_you |= level in ("action", "urgent")
             stage = "Nominations" if b.get("nominating") else "Voting"
-            t.append("\n")
+            t = Text()
             t.append(f" {tag} ", style=TAG_STYLE[level])
-            t.append(f"  {b['label']}\n", style="bold")
+            t.append(f" {b['label']}\n", style="bold")
             if b.get("nominating"):
-                t.append("   Nominated: ", style="dim")
+                t.append(" Nominated: ", style="dim")
                 t.append((", ".join(b["nominations"]) or "nobody yet") + "\n")
             else:
-                t.append("   Choices: ", style="dim")
+                t.append(" Choices: ", style="dim")
                 t.append(" / ".join(b["choices"]))
-                t.append(f"     {b['votes_cast']}/{b['electorate_size']} voted\n", style="dim")
+                t.append(f"  {b['votes_cast']}/{b['electorate_size']} voted\n", style="dim")
             left, total = b["days_left"] or 0, b.get("phase_days") or 30
             bar_style = "red" if left <= 3 else "yellow" if left <= 10 else "green"
-            t.append("   " + bar(left, total, 20), style=bar_style)
-            t.append(f"  {stage} close in {left} day{'s' if left != 1 else ''}", style=bar_style)
-            t.append(f" ({b['closes']})\n", style="dim")
+            t.append(" " + bar(left, total, 12), style=bar_style)
+            t.append(f" {stage} close in {left} day{'s' if left != 1 else ''}", style=bar_style)
             if tag == "CANDIDATE":
                 by = b.get("nominated_by", {}).get(v["you"])
                 how = f"{by} put you forward" if by and by != v["you"] else "you are standing"
-                t.append(f"   {how}{'' if b.get('nominating') else '; your vote is for yourself'}. "
-                         "Press N to decline.\n", style=ALERT_STYLE[level])
+                t.append(f"\n {how}. N declines.", style=ALERT_STYLE[level])
             elif level in ("action", "urgent"):
                 key = "N" if tag == "NOMINATE" else "V"
-                hint = ("Busy now: you can vote when you are free." if tag == "VOTE WHEN FREE"
+                hint = ("Busy: vote when you are free." if tag == "VOTE WHEN FREE"
                         else f"Press {key} to {'nominate' if key == 'N' else 'vote'}.")
-                t.append(f"   {hint}\n", style=ALERT_STYLE[level])
+                t.append(f"\n {hint}", style=ALERT_STYLE[level])
+            cards.append(t)
+
+        from rich.columns import Columns
         from rich.console import Group
-        parts = [head] + ([Text(""), meters] if meters else []) + [t]
+        news = Text()
+        if not cards:
+            news.append("No open elections, votes or contests.\n", style="dim")
+        for i, a in enumerate(reversed(self.hud.alerts[-5:])):
+            newest = i == 0 and self.hud.alert_fresh()
+            style = ALERT_STYLE[a.level] + (" reverse" if newest and a.level in ("action", "urgent") else "")
+            news.append(f"{a.icon} ", style="")
+            news.append(f"{a.date}  ", style="dim")
+            news.append(a.text + "\n", style=style)
+        parts = ([Columns(cards, padding=(0, 3)), Text("")] if cards else []) + [news]
         self.query_one("#ballots_body", Static).update(Group(*parts))
         self.query_one("#ballots").set_class(needs_you, "attention")
 
-    def _draw_contests(self, t: Text, v) -> bool:
-        """Cards for running persuasion campaigns and challenges. Returns True if one needs you."""
+    @staticmethod
+    def _contest_cards(v) -> Tuple[List[Text], bool]:
+        """A card for each running persuasion campaign and challenge, and whether one needs you."""
+        cards: List[Text] = []
         needs_you = False
         mine_first = sorted(v.get("contests", []), key=lambda c: c["your_role"] not in ("challenger", "defender"))
         for c in mine_first:
             role = c["your_role"]
             mine = role in ("challenger", "defender")
             needs_you |= mine
-            t.append("\n")
+            t = Text()
+            cards.append(t)
             tag = "PERSUASION" if c["style"] == "persuasion" else "CHALLENGE"
             t.append(f" {tag} ", style=TAG_STYLE["urgent" if mine else "info"])
             if c["style"] == "pending":
-                t.append(f"  ⏳ {c['challenger']} challenges {c['defender']} for {c['office']}\n", style="bold")
+                t.append(f" ⏳ {c['challenger']} challenges {c['defender']} for {c['office']}\n", style="bold")
                 choices = ", ".join(a["name"].lower() for a in c["allowed"])
-                t.append(f"   {c['defender']} chooses the contest: {choices}\n", style="")
-                t.append(f"   {format_life_duration(c['hours_left'])} to choose\n", style="dim")
+                t.append(f" {c['defender']} chooses the contest: {choices}\n", style="")
+                t.append(f" {format_life_duration(c['hours_left'])} to choose", style="dim")
                 if role == "defender":
-                    t.append("   Press H to choose your contest!\n", style="bold red")
+                    t.append("\n Press H to choose your contest!", style="bold red")
                 continue
             if c["style"] == "persuasion":
                 whom = f" (replacing {c['defender']})" if c["defender"] else ""
-                t.append(f"  {c['icon']} {c['challenger']} → {c['office']}{whom}\n", style="bold")
+                t.append(f" {c['icon']} {c['challenger']} → {c['office']}{whom}\n", style="bold")
                 sup, need = c["support"], c["success_at"]
                 style = "green" if sup >= need else "yellow"
-                t.append(f"   Tribe persuaded {bar(sup, 100, 14)} {sup:.0f}%", style=style)
+                t.append(f" Tribe persuaded {bar(sup, 100, 12)} {sup:.0f}%", style=style)
                 t.append(f" (needs {need}%)\n", style="dim")
             else:
-                t.append(f"  {c['icon']} {c['challenger']} vs {c['defender']} for {c['office']}: {c['name'].lower()}\n",
+                t.append(f" {c['icon']} {c['challenger']} vs {c['defender']} for {c['office']}: {c['name'].lower()}\n",
                          style="bold")
                 if c["style"] == "audience":
-                    t.append(f"   Crowd for {c['challenger']} {bar(c['support'], 100, 14)} {c['support']:.0f}%\n",
+                    t.append(f" Crowd for {c['challenger']} {bar(c['support'], 100, 12)} {c['support']:.0f}%\n",
                              style="green" if c["support"] > 50 else "yellow")
                 elif c["style"] == "duel":
                     m = c["meters"].get("momentum", 50)
-                    t.append(f"   {c['defender']} {bar(m, 100, 14)} {c['challenger']}  ", style="")
+                    t.append(f" {c['defender']} {bar(m, 100, 12)} {c['challenger']}  ", style="")
                     t.append(f"{'gaining' if m > 50 else 'losing' if m < 50 else 'even'} for {c['challenger']}\n",
                              style="green" if m > 50 else "yellow")
                 else:
                     sc = c["scores"]
-                    t.append(f"   {c['challenger']} {sc.get(c['challenger'], 0):g} {c['unit']}  ·  "
+                    t.append(f" {c['challenger']} {sc.get(c['challenger'], 0):g} {c['unit']}  ·  "
                              f"{c['defender']} {sc.get(c['defender'], 0):g} {c['unit']}\n")
             left = c["hours_left"]
-            t.append(f"   {bar(left, c['total_hours'], 14)} {format_life_duration(left)} left\n", style="dim")
+            t.append(f" {bar(left, c['total_hours'], 12)} {format_life_duration(left)} left", style="dim")
             if role == "challenger" and c["style"] == "persuasion":
-                t.append("   Press P to win people over.\n", style="bold green")
+                t.append("\n Press P to win people over.", style="bold green")
             elif role == "defender" and c["style"] == "persuasion":
-                t.append("   Press P to keep people on your side!\n", style="bold red")
+                t.append("\n Press P to keep people on your side!", style="bold red")
             elif role == "audience" and c["style"] == "persuasion":
-                t.append(f"   You are {c['meters'].get(v['you'], 0):.0f}% persuaded.\n", style="dim")
+                t.append(f"\n You are {c['meters'].get(v['you'], 0):.0f}% persuaded.", style="dim")
             elif mine and c["style"] == "audience":
-                t.append("   Press P to speak to the listeners!\n", style="bold red" if role == "defender" else "bold green")
+                t.append("\n Press P to speak to the listeners!", style="bold red" if role == "defender" else "bold green")
             elif mine:
-                t.append("   You are in this contest.\n", style="bold red" if role == "defender" else "bold green")
-        return needs_you
-
-    def _contest_meters(self, v):
-        """Each running campaign or oration as a column: how far every listener is won over.
-        Columns sit side by side when the panel is wide enough, else stack (the panel scrolls)."""
-        from rich.columns import Columns
-        cols = []
-        for c in meter_contests(v):
-            col = Text(no_wrap=True, overflow="ellipsis")
-            what = "persuaded by" if c["style"] == "persuasion" else "for"
-            col.append(f"{c['icon']} {what} {c['challenger']}\n", style="bold")
-            col.append(f"   ({c['office']})\n", style="dim")
-            for p in v["players"]:
-                name = p["name"]
-                m = c["meters"].get(name)
-                if m is None and name not in (c["challenger"], c["defender"]):
-                    continue
-                col.append(f"{name:<8}", style="bold green" if name == v["you"] else "bold")
-                if m is None:
-                    col.append("campaigning\n" if name == c["challenger"] else "defending\n", style="cyan")
-                else:
-                    col.append(f"{bar(m, 100, 8)} {m:3.0f}%\n", style="green" if m >= 50 else "yellow")
-            cols.append(col)
-        return Columns(cols, width=22, padding=(0, 2)) if cols else None
+                t.append("\n You are in this contest.", style="bold red" if role == "defender" else "bold green")
+        return cards, needs_you
 
     def _draw_tribe(self, v):
         # One line per member, cut to the panel's width with '…' (never wrapped: a wrapped line pushed the
@@ -1682,13 +1775,8 @@ class CommandCenter(Screen):
             t.append(f" died at {b['age']} · ", style="red")
             t.append(f"{b['handler']} sees to it\n" if b["handler"] else f"unburied {b['days']}d (W)\n",
                      style="yellow" if b["handler"] else "bold red")
-        legend = Text()
-        legend.append("\nbusy now", style="yellow")
-        legend.append(" · last deed, at home\n● mood (green content, red unhappy) · ✗ cannot vote\nred icon = in need · "
-                      "🤒 ill · 🤰 with child · 🧒 child · 💀 dead, not yet laid to rest\nF2 details · F9 society",
-                      style="dim")
-        from rich.console import Group
-        self.query_one("#tribe_body", Static).update(Group(t, legend))
+        t.rstrip()
+        self.query_one("#tribe_body", Static).update(t)
 
     def _draw_places(self, v):
         """Places Scouts found (and gardeners' plots): what is left at each, oldest first (trips go there
@@ -1705,7 +1793,8 @@ class CommandCenter(Screen):
         for x in camp.get("spent_sites", []):
             t.append(f"{x['icon']} {x['short']:<13} {x['how']} ({x['by']})\n", style="dim")
         if not camp.get("sites") and not camp.get("spent_sites"):
-            t.append("None yet: a Scout can look for berry grounds,\ngame trails, deadwood... (W)\n", style="dim")
+            t.append("None yet: a Scout can look for berry\ngrounds, game trails, deadwood... (W)\n", style="dim")
+        t.rstrip()
         self.query_one("#places_body", Static).update(t)
 
     def _draw_innovations(self, v):
@@ -1841,6 +1930,56 @@ class CommandCenter(Screen):
         if 0 <= index < len(names):
             self.action_info("innovations", names[index])
 
+    def action_toggle_actions(self):
+        """Show or hide the box of actions and keys (the keys work either way)."""
+        box = self.query_one("#actions")
+        box.display = not box.display
+
+    def action_pan(self, dx: int, dy: int):
+        self.query_one("#map", WorldMapView).pan(dx, dy)
+
+    def action_map_home(self):
+        self.query_one("#map", WorldMapView).centre_on_home()
+
+    def action_map_me(self):
+        if self.hud.last_view is not None:
+            self.query_one("#map", WorldMapView).centre_on_person(self.hud.last_view["you"])
+
+    def action_zoom_in(self):
+        self.action_zoom(1)
+
+    def action_zoom_out(self):
+        self.action_zoom(-1)
+
+    def action_zoom(self, step: int):
+        view = self.query_one("#map", WorldMapView)
+        before = view.zoom
+        zoom = view.set_zoom(step)
+        if zoom == before:
+            self.set_status("The map is zoomed " + ("in" if step > 0 else "out") + " as far as it goes.", "dim")
+        else:
+            self.set_status("Zoomed " + ("out all the way." if zoom == 1 else f"in ×{zoom}: + closer, - further."), "dim")
+
+    def on_world_map_view_tile_clicked(self, event: WorldMapView.TileClicked):
+        view = self.query_one("#map", WorldMapView)
+        world = view.world
+        tile = (event.x, event.y)
+        here = []
+        spot = next((name for name, at in world.spots.items() if at == tile), None)
+        if spot == "fire":
+            burning = (view.scene or {}).get("fire_burning", True)
+            here.append(f"The fire of the {term('home')}" + ("" if burning else " (it has gone out)"))
+        elif spot:
+            here.append({"store": f"The {term('store_name')}", "workshop": "The workshop: where things are made",
+                         "council": "The council ground"}.get(spot, spot.capitalize()))
+        for s in (view.scene or {}).get("sites", []):
+            if (s["x"], s["y"]) == tile:
+                here.append(f"{s['icon']} The {s['short']} {s['by']} found (about {s['loads']:g} trips' worth left)")
+        people = view.people_at(*tile)
+        if people:
+            here.append(", ".join(people) + (" is here" if len(people) == 1 else " are here"))
+        self.set_status(f"({event.x}, {event.y}) " + "".join(h + ". " for h in here) + world.describe(event.x, event.y), "dim")
+
     def action_speed(self):
         self.hud.pacer.next_speed()
         self.hud.redraw()
@@ -1877,24 +2016,32 @@ class GovGenHUD(App):
     CSS = """
     Screen { layout: vertical; }
     #top { height: 1; background: $primary-darken-2; color: $text; }
-    #main { height: 1fr; }
-    #chronicle { width: 2fr; min-width: 30; border: round $accent; scrollbar-size-vertical: 1; }
-    #center { width: 3fr; }
-    #you { height: auto; border: round $accent; padding: 0 0; }
-    #you_head { height: auto; }
-    #you_id { width: 3fr; height: auto; padding: 0 1; link-style: none; link-style-hover: reverse; }
-    #you_roles { width: 2fr; }
-    #you_boxes { height: auto; grid-size: 3; grid-rows: auto; grid-gutter: 0 0; }
+    #main { height: 1fr; layers: map panels; }
+    #map { layer: map; width: 100%; height: 100%; }
+    #overlay { layer: panels; width: 100%; height: 100%; }
+    #overlay, #left, #mid, #right { visibility: hidden; }
+    #you, #chronicle, #actions, #tribe, #places { visibility: visible; }
+    .gap { height: 1fr; visibility: hidden; }
+    #tribe_body, #places_body { text-wrap: nowrap; text-overflow: ellipsis; }
+    #left { width: 46; height: 100%; }
+    #mid { width: 1fr; height: 100%; padding: 0 1; }
+    #right { width: 42; height: 100%; }
+    #you { height: auto; border: round $accent; padding: 0 1; background: $background; }
+    #you_id { height: auto; link-style: none; link-style-hover: reverse; }
+    #you_meters { height: auto; text-wrap: nowrap; text-overflow: ellipsis; }
+    #chronicle { height: 12; border: round $accent; scrollbar-size-vertical: 1; background: $background; }
     .box { height: auto; border: round $primary-lighten-2; border-title-color: $text; padding: 0 1;
            text-wrap: nowrap; text-overflow: ellipsis; }
-    #you_actions { link-style: none; link-style-hover: reverse; }
-    #ballots { height: 1fr; border: round $accent; padding: 0 1; }
+    #actions { link-style: none; link-style-hover: reverse; background: $background; }
+    #tribe { height: auto; max-height: 70%; border: round $accent; padding: 0 1; background: $background; }
+    #places { height: auto; max-height: 30%; border: round $accent; padding: 0 1; background: $background; }
+    #bottom { height: 9; }
+    #ballots { width: 1fr; height: 100%; border: round $accent; padding: 0 1; }
     #ballots.attention { border: heavy $success; }
-    #innovations { height: auto; max-height: 12; border: round $accent; padding: 0 1;
+    #gov_head { width: 34; height: 100%; }
+    #ballots_scroll { width: 1fr; height: 100%; padding: 0 0 0 1; border-left: solid $primary-darken-1; }
+    #innovations { width: 60; height: 100%; border: round $accent; padding: 0 1;
                    link-style: none; link-style-hover: reverse; }
-    #right { width: 42; }
-    #tribe { height: 1fr; border: round $accent; padding: 0 1; }
-    #places { height: auto; max-height: 14; border: round $accent; padding: 0 1; }
     #fkeys { height: 1; padding: 0 1; color: $text-muted; link-style: none; link-style-hover: reverse; }
     #status { height: 1; background: $primary-darken-3; }
     PickerScreen, RankScreen, TextScreen { align: center middle; }
@@ -1948,6 +2095,7 @@ class GovGenHUD(App):
         self.watcher = BallotWatcher()
         self.alerts: list = []
         self._alert_time = 0.0
+        self._view_time = 0.0  # when the latest view arrived: people on the map keep walking between views
 
     def on_mount(self):
         self.push_screen(CommandCenter())
@@ -1994,6 +2142,7 @@ class GovGenHUD(App):
         if version != self.version and view is not None:
             first = self.last_view is None
             self.version, self.last_view, self.last_legal = version, view, legal
+            self._view_time = time.monotonic()
             use_terms(view)  # what this age and government call things (Tribe, Camp...)
             self._watch_ballots(view, legal)
             main.draw(view, legal)
@@ -2001,8 +2150,20 @@ class GovGenHUD(App):
                 self.screen.refresh_view(view)  # e.g. the Tribe screen's meters stay live
             if first:
                 main.set_status("Welcome. The clock is running. F1 for help; letters act, F-keys look.", "dim")
+        self._move_people()
         if self.game_thread is not None and not self.game_thread.is_alive():
             self.exit()
+
+    def _move_people(self):
+        """Draw everyone on the map where they are by now: the game clock has moved on since the last view
+        (by at most a day: every day brings a new view), and people walk on along their paths."""
+        scene = (self.last_view or {}).get("map")
+        if scene is None:
+            return
+        pacer = self.pacer
+        rate = 0.0 if pacer.paused or not pacer.speed else HOURS_PER_YEAR / pacer.seconds_per_year * pacer.speed
+        ahead = min(24.0, (time.monotonic() - self._view_time) * rate)
+        self.main.query_one("#map", WorldMapView).show(scene, scene["clock"] + ahead)
 
     def _watch_ballots(self, view, legal):
         recent = [m.text for m in self.history[-80:] if m.important]

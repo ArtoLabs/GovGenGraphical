@@ -86,6 +86,7 @@ class Task:
     disposes_of_dead: bool = False    # lays one of the dead lying in camp to rest (core/life.py)
     illness_risk: Optional[float] = None  # x the illness 'work_chance' (life.json); None: 1 for job work, else 0
     done_text: str = ""               # what the chronicle says when done ('carries {body} away')
+    place: Optional[str] = None       # where it is done: a kind of place in data/rules/map.json 'places'
 
     @property
     def output_items(self) -> List[str]:
@@ -117,6 +118,14 @@ def _check_common(t: Dict[str, Any], where: str):
         require(tool in ITEMS and x > 0, where, f"speed_tools: unknown tool '{tool}' or speed not above 0")
 
 
+def _place(t: Dict[str, Any], where: str) -> Optional[str]:
+    """A task's 'place': where on the map it is done (a kind of place in data/rules/map.json)."""
+    from world.map import PLACES
+    require(t.get("place") is None or t["place"] in PLACES, where,
+            f"unknown place '{t.get('place')}' (see 'places' in data/rules/map.json)")
+    return t.get("place")
+
+
 def _load():
     tasks: Dict[str, Task] = {}
     for key, t in _data.get("tasks", {}).items():
@@ -138,7 +147,7 @@ def _load():
                           makes_sites=dict(t.get("makes_sites", {})), speed_tools=dict(t.get("speed_tools", {})),
                           disposes_of_dead=bool(t.get("disposes_of_dead", False)),
                           illness_risk=None if t.get("illness_risk") is None else float(t["illness_risk"]),
-                          done_text=str(t.get("done_text", "")))
+                          done_text=str(t.get("done_text", "")), place=_place(t, where))
         if t.get("finds_sites"):  # one task per site kind: the Scout chooses what to look for (work.json 'sites')
             base = tasks.pop(key)
             for kind, spec in _SITE_KINDS.items():
@@ -162,7 +171,8 @@ def _load():
                             [{"item": out["item"], "amount": float(out.get("count", 1)), "chance": 1.0, "exact": True}],
                             recipe=True, offices=list(r.get("offices", [])),
                             speed_tools=dict(r.get("speed_tools", _data.get("craft_speed_tools", {}))),
-                            illness_risk=None if r.get("illness_risk") is None else float(r["illness_risk"]))
+                            illness_risk=None if r.get("illness_risk") is None else float(r["illness_risk"]),
+                            place=_place(r, where))
     return tasks, recipes
 
 

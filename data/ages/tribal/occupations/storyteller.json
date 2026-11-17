@@ -10,5 +10,5 @@
   "description": "Keeps the group's stories alive and speaks for it at gatherings: the tribe's orator.",
   "also_trains": {"persuasion": 0.6},
   "contributes": {"culture": {"amount": 1.0}},
-  "tasks": {"tell_stories": {"label": "Tell stories by the fire", "life_hours": 1.5, "skill": "lore"}}
+  "tasks": {"tell_stories": {"place": "fire","label": "Tell stories by the fire", "life_hours": 1.5, "skill": "lore"}}
 }

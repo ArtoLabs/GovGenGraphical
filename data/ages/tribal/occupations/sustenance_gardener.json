@@ -9,6 +9,7 @@
   "description": "Plants and tends forest gardens: makes places where Gatherers are sure to find berries, roots and herbs (they don't gather it themselves).",
   "tasks": {
     "tend_garden": {
+      "place": "garden",
       "label": "Tend a forest garden",
       "life_hours": 2,
       "skill": "gathering",

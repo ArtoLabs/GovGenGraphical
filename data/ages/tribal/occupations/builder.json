@@ -10,6 +10,7 @@
   "contributes": {"shelter": {"amount": 1.0}},
   "tasks": {
     "build": {
+      "place": "camp",
       "label": "Raise shelters",
       "life_hours": 3,
       "skill": "building",

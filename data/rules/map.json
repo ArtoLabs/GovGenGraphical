@@ -1,0 +1,113 @@
+{
+  "_comment": "The world map: a grid of square tiles, each one kind of terrain (world/map.py). 'width' and 'height' are in tiles. 'seed': the same number always grows the same world; null grows a new one every time the game starts. The map is not yet tied to the game's rules: nobody walks on it and nothing is built on it.",
+  "width": 200,
+  "height": 120,
+  "seed": 1,
+  "generation": {
+    "_comment": "Two fields of smooth noise, height and wetness, each 0 to 1, decide every tile. 'feature_size': how many tiles across a typical hill or wood is (bigger: broader, calmer land). 'octaves': layers of finer detail. 'edge_falloff': how strongly the land sinks toward the map's edge, so that the world ends in sea (0: no sea border). Height picks the terrain from 'levels', lowest first: the first whose 'below' is above the tile's height. Between the beach and the hills, wetness picks it from 'land' the same way; 'marsh' is wet ground no higher than 'marsh.below'. 'rivers': how many run from the high ground down to the sea, and how long one may get in tiles.",
+    "feature_size": 26,
+    "octaves": 4,
+    "moisture_feature_size": 18,
+    "edge_falloff": 0.75,
+    "levels": [
+      {"terrain": "deep_water", "below": 0.3},
+      {"terrain": "water", "below": 0.36},
+      {"terrain": "sand", "below": 0.385},
+      {"terrain": "land", "below": 0.66},
+      {"terrain": "hills", "below": 0.76},
+      {"terrain": "mountains", "below": 0.88},
+      {"terrain": "peaks", "below": 9}
+    ],
+    "land": [
+      {"terrain": "plains", "below": 0.5},
+      {"terrain": "forest", "below": 0.64},
+      {"terrain": "deep_forest", "below": 9}
+    ],
+    "marsh": {"terrain": "marsh", "below": 0.42, "wetness": 0.6},
+    "rivers": {"terrain": "river", "count": 5, "max_length": 260}
+  },
+  "home": {
+    "_comment": "Where the people live (the age's word for it, 'home' in its terms: camp, village, city...). It is put on open ground as near the middle of the map as can be found within 'near_water' tiles of a river, with 'clear' tiles of buildable ground on every side. 'marker': what marks it on the map when the fire is not shown.",
+    "marker": "⛺",
+    "near_water": 7,
+    "clear": 3
+  },
+  "camp": {
+    "_comment": "How the camp is laid out around its fire, which burns on the home tile. 'spots': named places, as [east, south] tiles from the fire (each is put on the nearest free walkable tile): the 'store' where the shared goods lie, the 'workshop' where things are made, the 'council' ground where offices do their work. 'beds': everyone has a sleeping place of their own on a ring this many tiles from the fire ([nearest, farthest]). 'radius': someone within this many tiles of the fire is 'in camp': only there can they take from or put into the store. 'markers': how the text display draws the fire (burning and out) and the store.",
+    "radius": 5,
+    "spots": {"store": [2, 0], "workshop": [3, 1], "council": [-2, 1]},
+    "beds": [2, 3],
+    "markers": {"fire": "🔥", "fire_out": "░░", "store": "📦"}
+  },
+  "travel": {
+    "_comment": "People have bodies on the map and walk to wherever a thing is done (core/movement.py). 'life_hours_per_tile': how long one tile of open ground takes to cross, in hours of the day-night cycle (a terrain's 'move_cost' multiplies it; 0.035 = about 2 minutes). A trip out of camp takes the walk there, the work, and the walk back to the store: 'trip_work_share' is the share of a task's own 'life_hours' that is the work on the spot (the rest used to stand for the walk, which is now really walked). Work at a spot in camp takes the walk there plus all of its 'life_hours'.",
+    "life_hours_per_tile": 0.035,
+    "trip_work_share": 0.5
+  },
+  "places": {
+    "_comment": "Kinds of place where things are done. A task says which with its 'place' (data/ages/<age>/occupations/, work.json); a recipe is made at 'workshop' and an office's work done at 'council' unless it says otherwise; anything else is done at 'camp'. A place is either a camp spot ('at': fire, store, workshop, council, bed = one's own sleeping place, by_fire = a tile next to the fire) or somewhere out on the map: a walkable tile of one of 'terrain' (any, if not given) whose walk from the fire is between 'min_distance' and 'max_distance' tiles of open ground; one of the 'nearest' such tiles is chosen (all of them in range, if not given). Places out on the map are trips: the person comes back to the store when done.",
+    "camp": {"at": "by_fire"},
+    "fire": {"at": "by_fire"},
+    "store": {"at": "store"},
+    "workshop": {"at": "workshop"},
+    "council": {"at": "council"},
+    "bed": {"at": "bed"},
+    "play": {"min_distance": 2, "max_distance": 5, "stay": true},
+    "woods": {"terrain": ["forest", "deep_forest"], "nearest": 12},
+    "forage": {"terrain": ["forest", "plains", "marsh"], "min_distance": 5, "nearest": 30},
+    "herbs": {"terrain": ["forest", "deep_forest", "marsh"], "min_distance": 6, "nearest": 30},
+    "stone": {"terrain": ["hills", "mountains"], "min_distance": 5, "nearest": 12},
+    "water": {"terrain": ["river"], "nearest": 4},
+    "fishing": {"terrain": ["river", "water"], "nearest": 10},
+    "hunting": {"terrain": ["forest", "deep_forest", "plains", "hills"], "min_distance": 14, "max_distance": 30},
+    "scouting": {"min_distance": 18, "max_distance": 40},
+    "garden": {"terrain": ["plains", "forest"], "min_distance": 5, "max_distance": 9},
+    "patrol": {"min_distance": 6, "max_distance": 10},
+    "outside": {"min_distance": 10, "max_distance": 16}
+  },
+  "sites": {
+    "_comment": "A place a Scout finds (work.json 'sites') lies where the Scout went looking: on ground of its kind (the site kind's 'place' in the age's work.json) whose walk from the fire is between these distances. Trips of that kind then walk to it.",
+    "min_distance": 8,
+    "max_distance": 26
+  },
+  "zoom": {
+    "_comment": "How big a tile is drawn, in rows of text (it is twice as many characters wide): the first is fully zoomed out. + and - step through them.",
+    "levels": [1, 2, 3]
+  },
+  "terrain": {
+    "_comment": "Every kind of terrain. 'code': one character that stands for it in a saved map (each must differ). 'walkable': people can cross it. 'buildable': a structure can stand on it. 'move_cost': how slow it is to cross (1: open ground). 'fresh_water': drinkable. 'glyphs', 'color', 'background': how the text display draws a tile (two characters wide; several glyphs are mixed for texture); a graphical client uses its own art for each terrain key instead.",
+    "deep_water": {"code": "W", "name": "Deep water", "description": "Open sea: no crossing without a boat.",
+                   "walkable": false, "buildable": false, "move_cost": 0,
+                   "glyphs": ["  ", "  ", "~ ", "  ", " ~"], "color": "#3d6aa8", "background": "#11294f"},
+    "water": {"code": "w", "name": "Shallows", "description": "Shallow water near the shore: wading is slow.",
+              "walkable": true, "buildable": false, "move_cost": 4,
+              "glyphs": ["~ ", "  ", " ~", "  "], "color": "#7fb0e0", "background": "#1d4a86"},
+    "river": {"code": "r", "name": "River", "description": "Running fresh water: good to drink, slow to ford.",
+              "walkable": true, "buildable": false, "move_cost": 3, "fresh_water": true,
+              "glyphs": ["≈≈", "~≈", "≈~"], "color": "#b5d8ff", "background": "#2b68b5"},
+    "sand": {"code": "s", "name": "Beach", "description": "Sand along the water's edge.",
+             "walkable": true, "buildable": true, "move_cost": 1.5,
+             "glyphs": ["· ", "  ", " ·", "  "], "color": "#d6c68c", "background": "#9c8a55"},
+    "plains": {"code": "p", "name": "Plains", "description": "Open grassland: easy to cross and to build on.",
+               "walkable": true, "buildable": true, "move_cost": 1,
+               "glyphs": ["  ", " ,", "  ", "' ", "  ", " ."], "color": "#7fae52", "background": "#33602a"},
+    "marsh": {"code": "g", "name": "Marsh", "description": "Wet, reedy ground: slow going, and nothing stands on it.",
+              "walkable": true, "buildable": false, "move_cost": 3,
+              "glyphs": ["\" ", " \"", "~\"", "  "], "color": "#8fb58a", "background": "#2b4c40"},
+    "forest": {"code": "f", "name": "Forest", "description": "Woodland: wood, berries and game.",
+               "walkable": true, "buildable": false, "move_cost": 2,
+               "glyphs": ["♣ ", " ♣", "♣♠", "♠ "], "color": "#4aa544", "background": "#1d4722"},
+    "deep_forest": {"code": "F", "name": "Deep forest", "description": "Old, thick forest: hard to get through.",
+                    "walkable": true, "buildable": false, "move_cost": 3,
+                    "glyphs": ["♠♣", "♣♠", "♠♠"], "color": "#2f8232", "background": "#0f2e19"},
+    "hills": {"code": "h", "name": "Hills", "description": "Rough, stony high ground.",
+              "walkable": true, "buildable": true, "move_cost": 2,
+              "glyphs": ["∩ ", " ∩", "∩∩", "  "], "color": "#bfa873", "background": "#5c5231"},
+    "mountains": {"code": "m", "name": "Mountains", "description": "Steep rock: very slow to climb.",
+                  "walkable": true, "buildable": false, "move_cost": 5,
+                  "glyphs": ["▲ ", "▲▲", " ▲"], "color": "#c9c5bd", "background": "#57534d"},
+    "peaks": {"code": "M", "name": "Snowy peaks", "description": "The highest summits, under snow: no way across.",
+              "walkable": false, "buildable": false, "move_cost": 0,
+              "glyphs": ["▲▲", "▲▲", "▲ "], "color": "#ffffff", "background": "#8a8a94"}
+  }
+}

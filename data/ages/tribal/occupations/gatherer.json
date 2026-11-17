@@ -10,6 +10,7 @@
   "contributes": {"food": {"amount": 1.0, "category": "plants"}, "water": {"amount": 0.5}},
   "tasks": {
     "forage": {
+      "place": "forage",
       "label": "Forage for plants",
       "life_hours": 2,
       "skill": "gathering",
@@ -22,6 +23,7 @@
       "chance": 0.3
     },
     "gather_wood": {
+      "place": "woods",
       "label": "Gather wood",
       "life_hours": 1.5,
       "skill": "gathering",
@@ -31,6 +33,7 @@
       "also_done_by": ["Firekeeper"]
     },
     "gather_stone": {
+      "place": "stone",
       "label": "Gather stone",
       "life_hours": 1.5,
       "skill": "gathering",
@@ -38,6 +41,7 @@
       "site": "stone"
     },
     "fetch_water": {
+      "place": "water",
       "label": "Fetch water from the river",
       "life_hours": 1,
       "skill": "gathering",

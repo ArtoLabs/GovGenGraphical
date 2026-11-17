@@ -12,6 +12,7 @@
   "contributes": {"fire": {"amount": 1.0}},
   "tasks": {
     "tend_fire": {
+      "place": "fire",
       "label": "Tend the fire",
       "life_hours": 0.5,
       "skill": "firekeeping",

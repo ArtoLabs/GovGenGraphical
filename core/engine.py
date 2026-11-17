@@ -91,6 +91,8 @@ class GameEngine:
         self.life = Life(self)  # illness, healing, death, birth and childhood (core/life.py, data/rules/life.json)
         self.government.of_age = self.life.of_age
         self.government.sick_count = lambda: sum(1 for p in self.players if p.illness)
+        from core.movement import Movement
+        self.movement = Movement(self)  # everyone's body on the world map, and the walking actions take
         self.quality_levels: Dict[str, float] = {}  # society.json style 'use' qualities (Fire): raised by use
         self.quality_shocks: Dict[str, float] = {}  # chunks events (a death) took out of qualities, fading back
         self.government.quality_level = lambda key, start: self.quality_levels.get(key, start)
@@ -465,6 +467,7 @@ class GameEngine:
                     self.acting = None
                 self.free_at[p.name] = max(self.free_at[p.name], self.clock + rest)
                 self.last_action[p.name] = {"type": "collapse", "params": {}, "label": "", "group": ""}
+                self.movement.halt(p.name)  # they lie where they fell
             for occ in gov.occupations_of(p) if self.work_activity(p.name) > 0 else []:  # practice comes from working
                 o = OCCUPATIONS[occ]
                 if o.skill:
@@ -557,12 +560,14 @@ class GameEngine:
         society.init_satisfaction([p])
         self.free_at[p.name] = self.clock
         self.production.add_person(p.name)
+        self.movement.add(p.name, beside=getattr(p, "mother", None))
 
     def remove_person(self, p: Player):
         """Someone has died (core/life.py): they leave every office and job, every ballot and contest; what they
         carried goes to the camp store. Their body stays in camp (Life.bodies) until laid to rest. An office they
         held opens to an election at once (life.json 'succession')."""
         held = self.government.offices_of(p)
+        self.movement.forget(p.name)
         self.government.remove_player(p)
         self.voting.forget(p.name)
         self.contests.forget(p.name)
@@ -605,6 +610,7 @@ class GameEngine:
             return False
         last = self.last_action.get(player.name, {})
         verb = "wakes up" if last.get("params", {}).get("kind") == "sleep" else "gets up"
+        self.movement.halt(player.name)
         self.free_at[player.name] = self.clock
         self.resting.discard(player.name)
         self.last_action[player.name] = {"type": "stop", "params": {}, "label": "", "group": ""}
@@ -836,8 +842,15 @@ class GameEngine:
         self.production.finish_work(data)
 
     def duration(self, action: Action, player: Optional[Player] = None) -> int:
-        """Game hours the action keeps the player busy. Work goes faster with a speed tool in the pack
-        (a Toolmaker with a stone knife)."""
+        """Game hours the action keeps the player busy if begun now: the walk to where it is done (and, for
+        a trip out of camp, back to the store) plus the time on the spot (core/movement.py). Without a
+        player: the action's own time, with no walking."""
+        plan = self.movement.plan(player, action) if player is not None else None
+        return plan["total"] if plan else self.base_duration(action, player)
+
+    def base_duration(self, action: Action, player: Optional[Player] = None) -> int:
+        """Game hours the action itself takes, walking aside. Work goes faster with a speed tool in the
+        pack (a Toolmaker with a stone knife)."""
         if action.type in ("work", "craft"):
             hours = self.production.work_hours(action.type, action.params.get("task") or action.params.get("recipe"),
                                                player)
@@ -889,6 +902,7 @@ class GameEngine:
         if action.type not in ("wait", "care"):
             self.last_deeds[player.name] = self.last_action[player.name]
         self.free_at[player.name] = self.clock + self.duration(action, player)
+        self.movement.commit(player, action)  # their body sets off
         self.acting = None
         self._settle()
         return True
@@ -987,7 +1001,7 @@ class GameEngine:
         if a is None or params["activity"] not in dict(self.life.activities_for(player)):
             Messages.add(f"{player.name} can't do that now.", important=False)
             return False
-        self.schedule(self.clock + self.duration(Action("activity", params)), "activity_done",
+        self.schedule(self.clock + self.duration(Action("activity", params), player), "activity_done",
                       {"player": player.name, "activity": params["activity"]})
         Messages.add(f"{player.name} goes to {a['label'][0].lower() + a['label'][1:]}", important=False, reason=reason,
                      category="life")
@@ -1045,6 +1059,7 @@ class GameEngine:
             if self.acting is not None and self.acting.name == name:
                 continue  # they are choosing the contest right now; apply() keeps them busy until the end
             self.free_at[name] = c.ends
+            self.movement.go(name, "council")  # the bout is fought on the council ground
             self.last_action[name] = {"type": "contest", "params": {"contest": c.key, "kind": c.kind,
                                                                      "office": c.office, "opponent": other},
                                       "label": "", "group": ""}
@@ -1186,6 +1201,8 @@ class GameEngine:
             "in_contest": self._observe_in_contest(player),
             "possessions": self.possessions.observe(player),
             "camp": self.production.observe(player),
+            "map": self.movement.observe(player),  # where everyone is on the world map
+            "walks": self.movement.walks(player),  # how long the walk is for each trip you could make
             # What this age and government call things, and what the top bar shows of the shared store.
             "terms": self.terms(),
             "store_panel": game_data.inherited("store_panel", gov.age_keys(), []),
@@ -1315,6 +1332,7 @@ class GameEngine:
             "aside_looked": dict(self.aside_looked),
             "talk_free_at": dict(self.talk_free_at),
             "talk_what": dict(self.talk_what),
+            "movement": self.movement.to_dict(),
         }
 
     @classmethod
@@ -1346,6 +1364,7 @@ class GameEngine:
         engine.life.load_state(data.get("life", {}))
         # Saves from before core/production.py kept the fire, the places found and who last worked at the top.
         engine.production.load_state(data.get("production", data))
+        engine.movement.load_state(data.get("movement", {}))  # after production: found places get their spots
         engine.meals = dict(data.get("meals", {}))
         engine.quality_levels = {k: float(v) for k, v in data.get("quality_levels", {}).items()}
         engine.quality_shocks = {k: float(v) for k, v in data.get("quality_shocks", {}).items()}

@@ -12,6 +12,7 @@
   "contributes": {"safety": {"amount": 0.6}},
   "tasks": {
     "scout": {
+      "place": "scouting",
       "label": "Scout for {name}",
       "life_hours": 3,
       "skill": "scouting",

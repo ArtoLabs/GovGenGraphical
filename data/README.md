@@ -13,6 +13,8 @@ data/
   rules/                        how things work in EVERY age
     character.json  time.json  world.json  society.json  life.json  work.json
     items.json  occupations.json  contests.json  npc.json  interfaces.json
+    map.json                    the world map: its size and seed, how it is grown, every kind of terrain,
+                                the camp's layout, walking speed, and the kinds of place where things are done
   ages/
     tribal/                     everything that belongs to the Tribal Age
       age.json                  order, what opens it, what it calls things, the store panel, what a game starts with
@@ -129,6 +131,11 @@ The sections below still describe every field; where they say `work.json`, `item
 | How NPCs look after their health, lay the dead to rest, and how NPC children choose play and study | `npc.json` → `health`, `remains`, `childhood` |
 | Genders, and who can bear children | `character.json` → `genders` |
 | How long eating, drinking, sleeping or warming up takes (`life_hours`; eating is 0.5 = 30 minutes of the day-night cycle) and how much it restores | `character.json` → `care_actions` |
+| How fast people walk, and how much of a trip's time is the work itself | `map.json` → `travel.life_hours_per_tile`, `travel.trip_work_share` (a terrain's `move_cost` slows the walk) |
+| Where a task is done (so how far the walk is) | the task's `place` (a key of `map.json` → `places`); a recipe: the workshop; an office's work: the council ground |
+| What counts as a kind of place (which terrain, how far from the fire) | `map.json` → `places.<kind>`: `terrain`, `min_distance`, `max_distance`, `nearest`, or `at` (a camp spot) |
+| How far off the places Scouts find lie | `map.json` → `sites.min_distance`, `max_distance`; the site kind's `place` in the age's `work.json` |
+| How the camp is laid out, and how near the store one must be to use it | `map.json` → `camp.spots`, `camp.beds`, `camp.radius` |
 | How fast hunger, thirst, tiredness and cold set in; health | `character.json` → `needs`, `health` |
 | Whether health at 0 is death (now) or a collapse (the old rule), and what each need kills of | `character.json` → `health.at_zero`; `needs.<need>.death_cause` |
 | How hard winter bites, and how much worse with no fire in camp | `character.json` → `needs.warmth.season_factors`, `no_fire_factors` |

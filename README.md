@@ -3,7 +3,10 @@ Algorithm for building in-game government architecture
 
 ## Running
 
-From this folder:
+**The graphical game (Godot):** open `godot/project.godot` in Godot 4.7 and press F5, or run
+`godot/play.sh`. It is a client on top of the same engine and the same save: see `godot/README.md`.
+
+**The terminal HUD**, from this folder:
 
 ```bash
 ../venv/bin/pip install -r requirements.txt                       # once: installs Textual (the HUD)
@@ -192,11 +195,54 @@ what they give, and value food and water more when hungry or thirsty. Items are 
 `data/items.json`.
 
 **The HUD.** By default you play in real time on a fixed "command center" screen: the clock never
-waits for you. The Chronicle (left) shows what everyone does as it happens. The middle shows You
-(who you are and what you're doing, a Roles box with your office, work and powers, boxes of bars for
-your Body, Skills and Content, and your action keys grouped by kind), Government and votes (reforms, open elections and motions) and
-the Innovation pool (research, next age, and every discovery as an icon; click one for details).
-The right shows the tribe. Letters act (`v` vote, `n` nominate,
+waits for you. The world map fills the middle of the screen and the panels sit at its edges. Top left
+is You: name, age, office and work, what you're doing, bars for your body (health and every need), and
+one bar each for Ability, Skills (the average of all your skills) and Mood (the average of your
+contentment); everything else about you (description, attributes, each skill and contentment meter, what
+your roles are for) is on F8. Bottom left is the Chronicle, a small box with the latest few things that
+happened (F7 shows all of it). The right shows the tribe and the places found. A bar along the bottom
+holds Government and votes (reforms, society, a card per open election, motion and contest; F3 shows who
+is how far persuaded in each campaign) and the Innovation pool (research, next age, and every discovery
+as an icon; click one for details). `Tab` shows or hides one box with every action and key in it; the
+keys work whether it is showing or not.
+
+**The world map.** A grid of square tiles, each one kind of terrain: plains, forest, deep forest, hills,
+mountains, snowy peaks, marsh, beach, rivers, shallows and open sea. It scrolls like a top-down RPG map:
+the arrow keys move the view (Shift: faster), as do dragging with the mouse and the mouse wheel; `+` and
+`-` zoom in and out (three sizes; Ctrl and the wheel too); `Home` brings the view back to the camp and
+`End` to you; clicking a tile says what and who is there. The world is grown from a seed
+(`data/rules/map.json`: size, seed, how much sea, forest and mountain, and every terrain with its glyphs,
+colours, and whether it can be walked or built on), so the same seed always gives the same world.
+
+**The camp and the people on the map.** The camp is laid out around its fire (🔥, grey when it is out):
+the store (📦), the workshop, the council ground, and a sleeping place for everyone. Every person has a
+body on the map (☻, children ☺; you are green, someone walking is yellow; zoomed in, names are shown) and
+walks, by the quickest way over the ground, to wherever a thing is done:
+
+- a trip out of camp (wood, water, foraging, stone, herbs, hunting, fishing, scouting, patrolling,
+  tending a garden, carrying off the dead) is the walk there, the work on the spot, and the walk back to
+  the store, so **how long someone is gone depends on how far it is**. A place a Scout finds lies where the
+  Scout went looking (its icon shows on the map), and trips of that kind walk to it;
+- sleeping and resting happen at one's own sleeping place, eating and warming up beside the fire, crafting
+  at the workshop, an office's work on the council ground, tending the fire and telling stories at the fire;
+- the store can only be used in camp: someone out on a trip can't take from it or put into it until they
+  are back, and taking or putting shows as a walk over to the store;
+- voting, nominating, appointing, persuading and the rest of politics take no walking.
+
+Nothing else about the rules changed: the same actions, chances and yields; only the time an action
+takes now includes the walk. `data/rules/map.json` holds it all: `camp` (where the spots are, how big the
+camp is), `travel` (`life_hours_per_tile`: walking speed; `trip_work_share`: how much of a task's
+`life_hours` is the work itself on a trip), `places` (kinds of place: a camp spot, or terrain within a
+distance of the fire) and `sites`. Each task says where it is done with `"place"` (in its occupation file
+or the age's `work.json`), and each site kind likewise. `world/map.py` holds the map (the grid, the camp's
+spots, pathfinding, structures covering whole tiles: `can_build`, `build`) and knows nothing of the engine
+or the display; `core/movement.py` gives people their bodies and turns each action into a walking plan;
+`ui/worldmap.py` draws it all. Nothing is built on the map yet. The grid is laid out the way a tile engine
+wants it (rows of one-character terrain codes, `to_dict()` / `from_dict()`), ready for a Godot
+TileMapLayer, and where everyone is comes to the display as plain data (`view["map"]`: positions and the
+paths being walked).
+
+Letters act (`v` vote, `n` nominate,
 `a` appoint, `d` dismiss, `c` call a vote, `f` reform, `r` research, `o` orders, `e` eat, drink,
 sleep or warm up, `w` work (gather, hunt, craft...), `j` take up or give up a job, `x` wake or stop, `p` persuade, `h` challenge, `g` resign from an office, `i` inventory); each opens a small
 picker where one key chooses and Esc goes back. Pickers that list people (nominate, vote, appoint) show
